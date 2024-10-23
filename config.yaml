@@ -1,0 +1,7 @@
+dyan:
+  filename: 'dyan_dictionary.npy'
+  T: 10
+  Np: 161
+elastic_net:
+  gamma: 200
+  lambda_: 0.6
