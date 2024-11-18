@@ -1,0 +1,10 @@
+# dictionary_filename: 'dir_d_90.pth'
+batch_size: 8
+T: 36
+Np: 161
+normalize_dict: True
+
+fista_iter: 100
+fista_lambd: 0.004
+fista_reweighted: True
+fista_tol: 0.0001
