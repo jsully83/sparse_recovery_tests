@@ -1,9 +1,10 @@
+import random
 # from pathlib import Path
 # from types import SimpleNamespace
 
 # import cvxpy as cp
 # import matplotlib.pyplot as plt
-# import numpy as np
+import numpy as np
 # import seaborn as sns
 # import yaml
 # from einops import rearrange, repeat
@@ -15,6 +16,63 @@
 # set_option('display.max_rows', None)
 
 # data_dir = Path.cwd().parents[1].joinpath('Datasets', 'DYAN')
+
+
+def gridRing(N):
+    # epsilon_low = 0.25
+    # epsilon_high = 0.15
+    # rmin = (1 - epsilon_low)
+    # rmax = (1 + epsilon_high)
+
+    # epsilon_low = 0.25
+    epsilon_low = 0.15
+    epsilon_high = 0.15
+    rmin = (1 - epsilon_low)
+    rmax = (1 + epsilon_high)
+
+    thetaMin = 0.001
+    thetaMax = np.pi - 0.001
+    delta = 0.001
+    # Npole = int(N / 4)
+    Npole = int(N/2)
+    Pool = generateGridPoles(delta, rmin, rmax, thetaMin, thetaMax)
+    M = len(Pool)
+
+    idx = random.sample(range(0, M), Npole)
+    P = Pool[idx]
+    # Pall = np.concatenate((P, -P, np.conjugate(P), np.conjugate(-P)), axis=0)
+    Pall = np.concatenate((P, np.conjugate(P)), axis=0)  # mirror once
+
+    return P, Pall
+
+
+## Generate the grid on poles
+def generateGridPoles(delta, rmin, rmax, thetaMin, thetaMax):
+    rmin2 = pow(rmin, 2)
+    rmax2 = pow(rmax, 2)
+    xv = np.arange(-rmax, rmax, delta)
+    x, y = np.meshgrid(xv, xv, sparse=False)
+    mask = np.logical_and(np.logical_and(x ** 2 + y ** 2 >= rmin2, x ** 2 + y ** 2 <= rmax2),
+                          np.logical_and(np.angle(x + 1j * y) >= thetaMin, np.angle(x + 1j * y) <= thetaMax))
+    px = x[mask]
+    py = y[mask]
+    P = px + 1j * py
+
+    return P
+
+
+def get_Drr_Dtheta(N):
+    P, Pall = gridRing(N)
+    Drr = abs(P)
+    # Drr = torch.from_numpy(Drr).float()
+    Dtheta = np.angle(P)
+    # Dtheta = torch.from_numpy(Dtheta).float()s
+    return Drr, Dtheta
+
+
+
+
+
 
 
 # def find_alpha(A, Y, gamma, tau):

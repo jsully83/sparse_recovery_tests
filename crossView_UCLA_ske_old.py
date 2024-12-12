@@ -31,30 +31,41 @@ class NUCLA_CrossView(Dataset):
         Access input skeleton sequence, GT label
         When T=0, it returns the whole
     """
-    def __init__(self, root_list, dataType, sampling, phase, T, maskType, setup, nClip):
+
+    def __init__(self, root_list, dataType, sampling, phase, T, maskType, setup,nClip):
         self.root_list = root_list
         self.data_root = '/home/rsl/data/N-UCLA_MA_3D/multiview_action'
         self.dataType = dataType
         self.sampling = sampling
-        self.phase = phase
-        self.T = T
-        self.ds = 2
-        self.clips = nClip
         self.maskType = maskType
         cam = '1,2,3' 
         if self.dataType == '2D':
             self.root_skeleton = '/home/rsl/data/N-UCLA_MA_3D/openpose_est'
         else:
-            self.root_skeleton = 'home/rsl/data/N-UCLA_MA_3D/VideoPose3D_est/3d_est'
+            # self.root_skeleton = '/data/N-UCLA_MA_3D/skeletons_3d'
+            self.root_skeleton = '/home/rsl/data/N-UCLA_MA_3D/VideoPose3D_est/3d_est'
+
+        # self.root_list = root_list
         self.view = []
+        self.transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+
+        self.phase = phase
         if setup == 'setup1':       self.test_view = 'view_3'
         elif setup == 'setup2':     self.test_view = 'view_2'
         else:                       self.test_view = 'view_1'
-        for name_cam in cam.split(','): 
-            if name_cam in self.test_view: continue
-            self.view.append('view_' + name_cam)
+        for name_cam in cam.split(','): self.view.append('view_' + name_cam)
+        
+        self.T = T
+        self.ds = 2
+        self.clips = nClip
 
         self.num_samples = 0
+
         self.num_action = 10
         self.action_list = {'a01': 0, 'a02': 1, 'a03': 2, 'a04': 3, 'a05': 4,
                             'a06': 5, 'a08': 6, 'a09': 7, 'a11': 8, 'a12': 9}
@@ -63,28 +74,43 @@ class NUCLA_CrossView(Dataset):
                         'a06': "stand up", 'a08': "donning", 'a09': "doffing", 'a11': "throw", 'a12': "carry"}
         self.actionId = list(self.action_list.keys())
         # Get the list of files according to cam and phase
+        # self.list_samples = []
         self.test_list = []
+
+        # Compute the MEAN and STD of the dataset
+        allSkeleton = []
         self.samples_list = []
         for view in self.view:
-            file_list = self.root_list + view + '_train.list'
-            list_samples = np.loadtxt(file_list, dtype=str)
-            for name_sample in list_samples:
-                self.samples_list.append((view, name_sample))
+            #file_list = os.path.join(self.root_list, f"{view}.list")
+            if view != self.test_view:
+                file_list = self.root_list + view + '_train.list'
+                list_samples = np.loadtxt(file_list, dtype=str)
+                for name_sample in list_samples:
+                    self.samples_list.append((view, name_sample))
 
         self.test_list= np.loadtxt(os.path.join(self.root_list, f"{self.test_view}_test.list"), dtype=str)
+        # temp = []
+        # for item in self.test_list:
+        #     subject = item.split('_')[1]
+        #     if subject != 's05':
+        #         temp.append(item)
+
         if self.phase == 'test':
             self.samples_list = self.test_list
 
 
     def __len__(self):
       return len(self.samples_list)
-
+        # return 13
 
     def get_uniNorm(self, skeleton):
         'skeleton: T X 25 x 2, norm[0,1], (x-min)/(max-min)'
         # nonZeroSkeleton = []
-        if self.dataType == '2D':  dim = 2
-        else:                      dim = 3
+        # print(skeleton.shape)
+        if self.dataType == '2D':
+            dim = 2
+        else:
+            dim = 3
         normSkeleton = np.zeros_like(skeleton)
         visibility = np.zeros(skeleton.shape)
         bbox = np.zeros((skeleton.shape[0], 4))
@@ -114,6 +140,42 @@ class NUCLA_CrossView(Dataset):
 
         return normSkeleton, visibility, bbox
 
+    def pose_to_heatmap(self, poses, image_size, outRes):
+        ''' Pose to Heatmap
+        Argument:
+            joints: T x njoints x 2
+        Return:
+            heatmaps: T x 64 x 64
+        '''
+        GaussSigma = 1
+
+        T = poses.shape[0]
+        H = image_size[0]
+        W = image_size[1]
+        heatmaps = []
+        for t in range(0, T):
+            pts = poses[t]  # njoints x 2
+            out = np.zeros((pts.shape[0], outRes, outRes))
+
+            for i in range(0, pts.shape[0]):
+                pt = pts[i]
+                if pt[0] == 0 and pt[1] == 0:
+                    out[i] = np.zeros((outRes, outRes))
+                else:
+                    newPt = np.array([outRes * (pt[0] / W), outRes * (pt[1] / H)])
+                    out[i] = DrawGaussian(out[i], newPt, GaussSigma)
+            # out_max = np.max(out, axis=0)
+            # heatmaps.append(out_max)
+            heatmaps.append(out)   # heatmaps = 20x64x64
+        stacked_heatmaps = np.stack(heatmaps, axis=0)
+        min_offset = -1 * np.amin(stacked_heatmaps)
+        stacked_heatmaps = stacked_heatmaps + min_offset
+        max_value = np.amax(stacked_heatmaps)
+        if max_value == 0:
+            return stacked_heatmaps
+        stacked_heatmaps = stacked_heatmaps / max_value
+
+        return stacked_heatmaps
 
     def get_rgbList(self, view, name_sample):
         data_path = os.path.join(self.data_root, view, name_sample)
@@ -121,7 +183,6 @@ class NUCLA_CrossView(Dataset):
         # fileList = np.loadtxt(os.path.join(data_path, 'fileList.txt'))
         imgId = []
         imageList = []
-
         for item in os.listdir(data_path):
             if item.find('_rgb.jpg') != -1:
                 id = int(item.split('_')[1])
@@ -139,6 +200,46 @@ class NUCLA_CrossView(Dataset):
         'make sure it is sorted'
         return imageList, data_path
 
+    def get_rgb_data(self, data_path, imageList):
+        imgSize = []
+        imgSequence = []
+        imgSequenceOrig = []
+
+        for i in range(0, len(imageList)):
+            img_path = os.path.join(data_path, imageList[i])
+            # orig_image = cv2.imread(img_path)
+            # imgSequenceOrig.append(np.expand_dims(orig_image,0))
+
+            input_image = Image.open(img_path)
+            imgSize.append(input_image.size)
+            imgSequenceOrig.append(np.expand_dims(input_image, 0))
+
+
+            img_tensor = self.transform(input_image)
+
+            imgSequence.append(img_tensor.unsqueeze(0))
+
+        imgSequence = torch.cat((imgSequence), 0)
+        imgSequenceOrig = np.concatenate((imgSequenceOrig), 0)
+
+        return imgSequence, imgSize, imgSequenceOrig
+
+    def getROIs(self, orignImages, bboxes):
+        assert orignImages.shape[0] == bboxes.shape[0]
+        ROIs = []
+        for i in range(0, orignImages.shape[0]):
+            image = orignImages[i]
+            bbox = bboxes[i]
+            x_min, y_min, x_max, y_max = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+            #
+            # W = int(x_max - x_min)
+            # H = int(y_max - y_min)
+
+            crop_image = Image.fromarray(image[y_min:y_max, x_min:x_max])
+            crop_image_tensor = self.transform(crop_image)
+            ROIs.append(crop_image_tensor.unsqueeze(0))
+        ROIs = torch.cat((ROIs), 0)
+        return ROIs
 
     def getAffineTransformation(self, skeleton):
         ''' For cross-sub, sample rates
@@ -181,6 +282,46 @@ class NUCLA_CrossView(Dataset):
         affineSkeletons = np.concatenate((np.expand_dims(affine1Norm, 0), np.expand_dims(affine2Norm,0)))
         return affineSkeletons
 
+    def getTransformedImageSequence(self, imageSequenceOrig, bboxes):
+        probs = list(np.linspace(0.1, 0, 1))
+        p1 , p2 = random.sample(probs, 1)[0], random.sample(probs, 1)[0]
+
+        imagenet_norm = [[0.485, 0.456, 0.406],[0.229, 0.224, 0.225]]
+        s = 1
+        color_jitter = transforms.ColorJitter(0.8 * s, 0.8 * s, 0.8 * s, 0.2 * s)
+        data_transforms = transforms.Compose([transforms.RandomResizedCrop(size=224),
+                                              transforms.RandomHorizontalFlip(),
+                                              transforms.RandomApply([color_jitter], p=p1),
+                                              transforms.RandomGrayscale(p=p2),
+                                              GaussianBlur(kernel_size=int(0.1 * 224)),
+                                              transforms.ToTensor(),
+                                              transforms.Normalize(*imagenet_norm)])
+        'generate two image sequence as a pair'
+        affineImageSequences = []
+        affineImageROIs = []
+        for i in range(0, imageSequenceOrig.shape[0]):
+            image = imageSequenceOrig[0]
+            trans_image = Image.fromarray(image)
+            bbox = bboxes[i]
+            x_min, y_min, x_max, y_max = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+            crop_image = Image.fromarray(image[y_min:y_max, x_min:x_max])
+            trans_image_roi = data_transforms(crop_image)
+            trans_image_tensor = data_transforms(trans_image)
+            affineImageSequences.append(trans_image_tensor.unsqueeze(0))
+            affineImageROIs.append(trans_image_roi.unsqueeze(0))
+        affineImageSequences = torch.cat((affineImageSequences), 0)
+        affineImageROIs = torch.cat((affineImageROIs), 0)
+        return affineImageSequences, affineImageROIs
+
+    def getAugmentedImageSequencePair(self, imgageSequenceOrig, boxes):
+
+        affineImageSeq1, affineImageROI1 = self.getTransformedImageSequence(imgageSequenceOrig,boxes)
+        affineImageSeq2, affineImageROI2 = self.getTransformedImageSequence(imgageSequenceOrig, boxes)
+
+        augImageSeqPair = torch.cat((affineImageSeq1.unsqueeze(0), affineImageSeq2.unsqueeze(0),
+                                     affineImageROI1.unsqueeze(0), affineImageROI2.unsqueeze(0)),0)
+
+        return augImageSeqPair
 
     def paddingSeq_ske(self, skeleton, normSkeleton, visibility, affineSkeleton):
         Tadd = abs(skeleton.shape[0] - self.T)
@@ -238,15 +379,7 @@ class NUCLA_CrossView(Dataset):
 
         return skeleton_New, normSkeleton_New, imageSequence_New, ROIs_New, visibility_New,affineSkeleton_new, augImageSeqPair_new
 
-
     def get_data(self, view, name_sample):
-        """RETURN:\\
-        skeletonData = {\\
-            'normSkeleton': [1, T,num_joint,dim_joint]\\
-            'unNormSkeleton': [1, T,num_joint,dim_joint]\\
-            'visibility':visibility_input,\\
-            'affineSkeletons':affineSkeletons_input}
-        """
         imagesList, data_path = self.get_rgbList(view, name_sample)
         jsonList, imgList = alignDataList(os.path.join(self.root_skeleton, view), name_sample, imagesList,'N-UCLA')
         assert  len(imgList) == len(jsonList)
@@ -279,6 +412,9 @@ class NUCLA_CrossView(Dataset):
                 visibility_input = visibility
                 affineSkeletons_input = affineSkeletons
             else:
+                # skeleton_input = skeleton[0::self.ds, :, :]
+                # imageSequence_input = imageSequence[0::self.ds]
+
                 stride = T_sample / self.T
                 ids_sample = []
                 for i in range(self.T):
@@ -291,29 +427,29 @@ class NUCLA_CrossView(Dataset):
                 affineSkeletons_input = affineSkeletons[:,ids_sample,:,:]
 
 
+            # if skeleton_input.shape[0] != self.T:
+            #     skeleton_input, normSkeleton_input, imageSequence_input, ROIs_input, visibility_input, affineSkeletons_input, augImageSeqPair_input \
+            #         = self.paddingSeq(skeleton_input,normSkeleton_input, imageSequence_input, ROIs_input, visibility_input, affineSkeletons_input,augImageSeqPair_input)
             if skeleton_input.shape[0] != self.T:
                 skeleton_input, normSkeleton_input, visibility_input, affineSkeletons_input \
                     = self.paddingSeq_ske(skeleton_input, normSkeleton_input, visibility_input, affineSkeletons_input)
-        # Set clip as 1
-        normSkeleton_input = np.expand_dims(normSkeleton_input,0)
-        skeleton_input = np.expand_dims(skeleton_input,0)
-        affineSkeletons_input = np.expand_dims(affineSkeletons_input,0)
 
+        # imgSize = (640, 480)
+
+        # # normSkeleton, _ = self.get_uniNorm(skeleton_input)
+        # heatmap_to_use = self.pose_to_heatmap(skeleton_input, imgSize, 64)
+        # normSkeleton, num_samples
         skeletonData = {'normSkeleton': normSkeleton_input, 'unNormSkeleton': skeleton_input,
                         'visibility':visibility_input, 'affineSkeletons':affineSkeletons_input}
-        assert normSkeleton_input.shape[1] == self.T
+        # print('heatsize:', heatmap_to_use.shape[0], 'imgsize:', imageSequence_input.shape[0], 'skeleton size:', normSkeleton.shape[0])
+        # assert heatmap_to_use.shape[0] == self.T
+        assert normSkeleton_input.shape[0] == self.T
+        # assert imageSequence_input.shape[0] == self.T
 
         return skeletonData
 
 
     def get_data_multiSeq(self, view, name_sample):
-        """RETURN:\\
-        skeletonData = {\\
-                'normSkeleton': [num_clips, T,num_joint,dim_joint]\\
-                'unNormSkeleton': [num_clips, T,num_joint,dim_joint]\\
-                'visibility':visibility_input,\\
-                'affineSkeletons':affineSkeletons_input}
-        """
         imagesList, data_path = self.get_rgbList(view, name_sample)
         jsonList, imgList = alignDataList(os.path.join(self.root_skeleton, view), name_sample, imagesList,'N-UCLA')
 
@@ -421,10 +557,8 @@ class NUCLA_CrossView(Dataset):
             skeletons = self.get_data_multiSeq(view, name_sample) 
         # output affine skeletons
         label_action = self.action_list[name_sample[:3]]
-        dicts = {'input_skeletons': skeletons,
-                 'action': label_action,
-                 'sample_name':name_sample,
-                 'cam':view}
+        dicts = {'input_skeletons': skeletons, 'action': label_action,
+                 'sample_name':name_sample, 'cam':view}
 
         return dicts
 
